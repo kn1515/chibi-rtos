@@ -1,0 +1,35 @@
+/dts-v1/;
+/ {
+    description = "chibi-os for Milk-V Duo CV1800B";
+    #address-cells = <1>;
+    images {
+        kernel {
+            description = "chibi-os S-mode kernel";
+            data = /incbin/("chibi-os.bin");
+            type = "kernel";
+            arch = "riscv";
+            /* Select the bootm Linux calling convention, not Linux code. */
+            os = "linux";
+            compression = "none";
+            load = <0x80200000>;
+            entry = <0x80200000>;
+            hash-1 { algo = "crc32"; };
+        };
+        fdt {
+            description = "Minimal Duo handoff DTB";
+            data = /incbin/("duo.dtb");
+            type = "flat_dt";
+            arch = "riscv";
+            compression = "none";
+            hash-1 { algo = "crc32"; };
+        };
+    };
+    configurations {
+        default = "conf-duo";
+        conf-duo {
+            description = "Milk-V Duo CV1800B";
+            kernel = "kernel";
+            fdt = "fdt";
+        };
+    };
+};

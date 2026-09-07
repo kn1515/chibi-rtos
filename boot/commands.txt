@@ -1,0 +1,4 @@
+mmc dev 0
+fatls mmc 0:1
+fatload mmc 0:1 0x81400000 chibi-os.itb
+bootm 0x81400000#conf-duo

@@ -1,0 +1,47 @@
+/dts-v1/;
+
+/* Minimal handoff DTB for this fixed-board kernel, NOT a Linux board DTB.
+ * No interrupt, clock or pin controller discovery is implemented yet. */
+/ {
+    model = "Milk-V Duo (CV1800B) - chibi-os";
+    compatible = "milkv,duo", "sophgo,cv1800b";
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    chosen { stdout-path = "serial0:115200n8"; };
+    aliases { serial0 = &uart0; };
+
+    memory@80000000 {
+        device_type = "memory";
+        reg = <0x0 0x80000000 0x0 0x04000000>;
+    };
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        firmware@80000000 {
+            reg = <0x0 0x80000000 0x0 0x00200000>;
+            no-map;
+        };
+        /* Vendor multimedia buffers and the secondary core are untouched. */
+        vendor@82400000 {
+            reg = <0x0 0x82400000 0x0 0x01c00000>;
+            no-map;
+        };
+    };
+    soc {
+        compatible = "simple-bus";
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        uart0: serial@4140000 {
+            compatible = "snps,dw-apb-uart";
+            reg = <0x0 0x04140000 0x0 0x1000>;
+            reg-shift = <2>;
+            reg-io-width = <4>;
+            clock-frequency = <25000000>;
+            current-speed = <115200>;
+            status = "okay";
+        };
+    };
+};

@@ -1,195 +1,234 @@
-# chibi-rtos
+# chibi-os — Milk-V Duoから始める自作OS
 
-ESP32で作るミニOS・第1段階
+初代 **Milk-V Duo（CV1800B、64MB）** のメインC906コアで動く、最小のRISC-Vカーネルです。
+U-Bootの `bootm` からS-modeで起動し、自前のスタックとUARTドライバを使って次を表示します。
 
-これは、RTOS自作の入門として作った「協調型・スタックレスのタスクスケジューラ」です。
-ESP-IDFのFreeRTOS上で動作します。独立したベアメタルRTOSではありません。
-自作する部分はタスク管理表・実行順の選択・待ち時間の管理です。
-起動、ハードウェアの初期化、時計、シリアル出力、下層のCPU管理はESP-IDFに任せます。
+```text
+Hello chibi-os
+```
 
-## 対象
+ESP-IDF・FreeRTOSに依存するスケジューラから、**独立したfreestandingカーネル**へ変更しました。
+Cランタイム・標準ライブラリ・U-Bootのサービス関数を使いません。
+まだプロセス、仮想記憶、ファイルシステム、システムコールはありません。
+通常のOSへ育てるため、まず「ブートローダーから制御を受け取り、Cを動かす」部分を実装しています。
+リポジトリ名 `chibi-rtos` はそのままです。旧ESP32版はGit履歴の
+[`b76b1e4`](https://github.com/kn1515/chibi-rtos/tree/b76b1e4ec80fb2debacfc886180dafafa59512a1) に残っています。
 
-- 元祖ESP32搭載ボード（ESP32-WROOM-32 / ESP32-DevKitC等）、USBデータケーブル。
-- ESP-IDF v5.5.1を手順の基準として固定。最新版という意味ではありません。
-- センサーやLEDの配線は不要。シリアルモニターだけで確認できます。
-- ESP32-C3/S3等は別チップです。この手順のターゲットは `esp32` です。
+## 対象と前提
 
-## 動くもの
+- 初代Milk-V Duo、CV1800B、64MB、RISC-Vメインコア。**Duo 256M・Duo Sは対象外**です。
+- メーカーの初代Duo用SDイメージで、U-Bootのコンソールまで正常に起動できること。
+- U-Bootは公式SDKの `CONFIG_RISCV_SMODE=y`、FIT対応構成を基準にしています。
+- PC：Ubuntu 24.04を手順の基準とします。Debianでも同じパッケージ名を使います。
+- microSD、カードリーダー、3.3V対応USB-UART変換器、配線3本。
 
-起動直後にAとBを実行し、それ以降Aは処理終了から500ms以上、Bは1000ms以上待って再実行します。
-1回のスケジューラ呼び出しで実行するタスクは最大1個。最大4個まで登録できます。
-複数が実行可能なら、前回実行したタスクの次から巡回して選びます。
+メーカーのBoot ROM → FSBL → OpenSBI → U-Bootを再利用します。
+FSBL/U-BootがDRAM・クロック・UARTのピン設定を済ませた後にカーネルを実行します。
+OpenSBIはM-modeに残ります。カーネルはS-modeで動作し、今回SBI呼び出しは行いません。
+小コアの状態はメーカーのファームウェアに依存し、この実装では起動・停止・通信を行いません。
 
-## Makeでセットアップ・ビルドする（Ubuntu 24.04）
+## なぜ `go` ではなく `bootm` なのか
 
-以下はPC上で実行するコマンドです。ESP32へ直接入力するものではありません。
-最初にリポジトリを取得するためのGitと、コマンドを実行するMakeだけを用意します。
+初代Duoの公式ボード設定では `CONFIG_CMD_GO` と `CONFIG_CMD_BOOTI` が無効です。
+有効なFIT形式と `bootm` を使い、U-Bootの再ビルドを不要にしました。
+
+`make build` はカーネルのバイナリと最小Device Treeを **`chibi-os.itb`（FITイメージ）** にまとめます。
+FITの `os = "linux"` は、U-BootのLinux用引き渡し規約を選ぶためのメタデータです。
+Linux本体を含めるという意味ではありません。
+この経路ではU-Bootが起動前処理を行い、`a0=hart ID`、`a1=DTBアドレス` を渡します。
+Device Treeが必要なので、この固定ボード用の小さなDTBを同梱しています。
+**このDTBはLinuxを起動するための完全なボード定義ではありません。**
+
+## 1. セットアップとビルド
+
+PCのターミナルで実行します。既にclone済みなら、リポジトリ内で `git pull` してから進めます。
 
 ```bash
 sudo apt update
 sudo apt install -y git make
-mkdir -p ~/esp
-cd ~/esp
 git clone https://github.com/kn1515/chibi-rtos.git
 cd chibi-rtos
 make setup
 make build
 ```
 
-`make setup` はUbuntu/Debianの依存パッケージをaptでインストールし、
-ESP-IDF v5.5.1を `~/esp/esp-idf-v5.5.1` に取得してESP32用ツールを導入します。
-パッケージ導入時にsudoパスワードを求められる場合があります。
-`sudo make setup` ではなく、通常ユーザーで `make setup` を実行してください。
-プロジェクトとESP-IDFのパスに空白を入れないでください。
+`make setup` はGCC/BinutilsのRISC-V bare-metalツールチェーン、`dtc`、`mkimage`、
+`picocom`、Pythonを導入します。通常ユーザーで実行し、aptの操作時だけsudoを使います。
+**ESP-IDFやメーカーの巨大なSDKのダウンロードは不要です。**
 
-既に必要なOSパッケージを導入済みなら `make setup SKIP_DEPS=1` でapt処理を省略できます。
-SDKが既にある場合はバージョンと変更の有無を確認して再利用します。
-異なるバージョンや追跡ファイルの変更がある場合は、既存SDKを書き換えずエラーにします。
-新規取得はネットワーク接続が必要です。インストール途中で失敗した場合は原因を解消して再実行してください。
+既に依存ツールがある場合は `make setup SKIP_DEPS=1` で存在チェックのみを実行できます。
+別のGNUツールチェーンを使う場合は、各コマンドへ `CROSS_COMPILE=/path/to/riscv64-unknown-elf-`
+を指定してください。ISAは `rv64imac_zicsr_zifencei`、ABIは `lp64` です。
+C906固有命令や浮動小数点命令を使わない構成です。
 
-各Makeコマンドが必要なシェル内で `export.sh` を読み込みます。
-**ターミナルを開くたびに手動で `export.sh` を実行する必要はありません。**
-ターゲットはESP32固定です。`make build` はsetup済みのSDKを使い、毎回の再インストールは行いません。
-
-SDKの保存先を変更する場合は、各コマンドに同じ `IDF_DIR` を指定します。
-
-```bash
-make setup IDF_DIR=/absolute/path/esp-idf-v5.5.1
-make build IDF_DIR=/absolute/path/esp-idf-v5.5.1
-```
-
-## 書き込み・モニター
-
-USB接続し、ポートを調べます。
-
-```bash
-ls /dev/ttyUSB* /dev/ttyACM*
-```
-
-存在しないパターンのエラーは無視し、表示された実際のポートを選びます。
-以下は `/dev/ttyUSB0` の例です。書き込みは現在のファームウェアを置き換えます。
-
-```bash
-make flash-monitor PORT=/dev/ttyUSB0
-```
-
-ビルド・書き込み・シリアルモニターを順に実行します。モニターの終了はCtrl+]です。
-接続待ちで進まない場合はBOOTを押しながら書き込みを開始し、接続したら離します。
-Linuxで権限エラーの場合は `sudo usermod -aG dialout "$USER"` を実行し、一度ログアウトして再ログインします。
-ポートがない場合は、データ対応USBケーブル、ボードのUSB-UARTドライバ、他のモニターによるポート占有を確認します。
-
-| コマンド | 内容 |
+| 生成物 | 用途 |
 | --- | --- |
-| `make` / `make help` | コマンド一覧 |
-| `make setup` | OS依存パッケージとESP-IDF・ESP32ツールを導入 |
-| `make deps` | OS依存パッケージだけを導入 |
-| `make build` | ファームウェアをビルド |
-| `make flash PORT=/dev/ttyUSB0` | 必要なビルドを行って書き込み |
-| `make monitor PORT=/dev/ttyUSB0` | シリアルモニター |
-| `make flash-monitor PORT=/dev/ttyUSB0` | ビルド・書き込み・モニター |
-| `make menuconfig` | 設定画面 |
-| `make clean` | ESP-IDFのビルド生成物をクリーン |
-| `make fullclean` | ESP-IDFのビルドディレクトリをクリーン |
-| `make test` | PC上のテスト。ESP-IDFや実機は不要 |
+| `build/chibi-os.elf` | シンボル・デバッグ情報付きカーネル |
+| `build/chibi-os.bin` | ヘッダーなしの機械語と初期化データ |
+| `build/duo.dtb` | このカーネル用の最小Device Tree |
+| **`build/chibi-os.itb`** | **SDカードへコピーする起動イメージ** |
+| `build/chibi-os.map` | 関数・データ・スタックの配置 |
 
-`make clean` / `make fullclean` はsdkconfigとPC用の `.host-build` を削除しません。
-`sdkconfig.defaults` は初回構成生成時に1コア動作と1000HzのFreeRTOS tickを設定します。
-既存のsdkconfigがある場合は `make menuconfig` のComponent config → FreeRTOSで確認してください。
-別チップ向けのsdkconfigはこのESP32専用プロジェクトへ持ち込まないでください。
+## 2. SDカードへコピーする
 
-## Windows・macOSの場合
+メーカーの初代Duo用イメージで起動できるSDカードを使います。初回のSDイメージ作成は
+[公式の導入手順](https://milkv.io/docs/duo/getting-started/boot)に従ってください。
+OSイメージを新規に書き込む操作はSDカードの内容を消します。
+本リポジトリのMakefileはSDカードのフォーマットやディスク全体への書き込みを行いません。
 
-このMake手順の基準環境はUbuntu 24.04です。WindowsではWSL2上のUbuntuで利用できますが、
-書き込み・モニターにはUSBデバイスをWSL側へ接続する追加設定が必要です。
-macOSで使う場合はBash、Make、Git、Python3とESP-IDF公式手順の依存ツールを用意し、
-`make setup SKIP_DEPS=1` を使います。macOSでの動作は未検証です。
-WindowsネイティブのPowerShellにはこのBash用Make手順をそのまま適用できません。
-公式ESP-IDF環境から直接 `idf.py build` や `idf.py -p COM5 flash monitor` を実行できます。
+PCでSDカードのFATブートパーティション（`fip.bin`、`boot.sd` がある場所）をマウントし、
+そこへ `build/chibi-os.itb` をコピーします。Linuxの例：
 
-## 出力の読み方
+```bash
+make sd-copy SD_DIR=/media/yourname/boot
+```
 
-次は形式を示す架空の例で、実機測定ログではありません。
+`SD_DIR` は実際のマウント先へ置き換えてください。
+このコマンドはマウントポイントと `fip.bin` の存在を確認して、`chibi-os.itb` だけを書き込みます。
+既に同名ファイルがあれば更新します。ファイルマネージャーでのコピーでも構いません。
+コピー後は安全にアンマウントしてから抜いてください。
+`fip.bin`、`boot.sd`、U-Bootの保存済み環境変数を変更する必要はありません。
+
+## 3. UART配線
+
+ボードはUSB-Cから給電し、USB-UART変換器は信号線とGNDだけ接続します。
+**3.3Vロジック用の変換器を使い、5V信号やVCC線をDuoへ接続しないでください。**
+
+| Milk-V Duo | 物理ピン番号 | USB-UART側 |
+| --- | --- | --- |
+| GP12 / UART0 TX | 16 | RX |
+| GP13 / UART0 RX | 17 | TX |
+| GND | 18 | GND |
+
+TXとRXは交差させます。USB-Cケーブルだけでは、この手順のUART0コンソールは開けません。
+UARTは **115200bps、8データビット、パリティなし、1ストップビット、フロー制御なし** です。
+配線位置は[公式の初代Duoピン配置](https://milkv.io/docs/duo/getting-started/duo)も確認してください。
+
+PCでシリアルポートを確認し、例えば `/dev/ttyUSB0` なら次を実行します。
+
+```bash
+make monitor PORT=/dev/ttyUSB0
+```
+
+picocomの終了は **Ctrl+A、続けてCtrl+X** です。
+Linuxで権限エラーの場合は `sudo usermod -aG dialout "$USER"` の後にログアウト・再ログインします。
+WindowsではTera Term等のシリアルソフトでも構いません。
+WSL2では、書き込み用SDのマウントとUARTアダプターのUSB接続を別途設定するか、
+ビルドだけWSL2で行い、コピーとUART操作をWindows側で行ってください。
+
+## 4. U-Bootから起動する
+
+SDカードをDuoへ戻し、UARTモニターを開いた状態で電源を入れます。
+ブートログの `Hit any key to stop autoboot` が出たらキーを押して自動起動を止めます。
+公式設定の待ち時間は短いので、電源投入前からモニターを開いてください。
+
+`cv180x_c906#` などの **U-Bootプロンプト** で、次を1行ずつ実行します。
+PCのシェルや、起動済みLinuxのシェルで実行するコマンドではありません。
 
 ```text
-mini_os: cooperative scheduler on ESP-IDF
-[300 ms] A: 1
-[301 ms] B: 1
-[801 ms] A: 2
-[1302 ms] B: 2
-[1303 ms] A: 3
+mmc dev 0
+fatls mmc 0:1
+fatload mmc 0:1 0x81400000 chibi-os.itb
+bootm 0x81400000#conf-duo
 ```
 
-時計はapp_main開始時に0へリセットしていません。初期値は0とは限りません。
-500ms/1000msは「処理終了後の最小待ち時間」で、厳密な周期ではありません。
-出力処理や他のタスクの実行により遅れ、長期的にはずれが累積します。
-順序も期限や出力の所要時間で変わります。Aが概ねBの2倍の頻度で増えることを確認してください。
+`fatls` でファイルが見え、`fatload` が成功してバイト数を表示したことを確認してから
+`bootm` を実行してください。デバイス・パーティション番号はメーカーSDの `mmc 0:1` を基準にしています。
+異なる構成の場合は `mmc list` や `part list mmc 0` で確認し、実際の番号に置き換えます。
+PCでは `make boot-commands` で同じコマンドを表示できます。
 
-## 仕組みと約束
+起動できると、U-BootのFIT読込・検証メッセージに続いて次が表示されます。
+下記は想定される表示形式で、実機で取得したログではありません。
 
-1. `os_add_task` が関数、保持データ、次回実行時刻をタスク管理表に登録します。
-2. `os_step` が、待ち時間を終えたタスクを巡回順に最大1個選びます。
-3. 選ばれた関数は短い処理をし、次回までの待ち時間を `return` します。
-4. スケジューラは終了時刻に待ち時間を足し、次の実行可能時刻を保存します。
-5. `vTaskDelay(1)` は下層FreeRTOSへ実行時間を返します。この設定では1tickは1msです。
-   実際の再開までの時間はtickの位相や他の処理に左右されます。
+```text
+Starting kernel ...
 
-`return 500;` 自体は500msブロックする命令ではありません。関数から戻り、管理表へ
-「500ms後から再実行可能」と記録するための戻り値です。その間に別のタスクを実行できます。
-再実行は関数の先頭からです。途中の行やローカル変数は復元しません。
-継続データはmain.cのカウンターのように寿命のある構造体/変数を `arg` で渡してください。
+Hello chibi-os
+```
 
-タスクに無限ループや長時間の待機を入れると、自作スケジューラ内の他のタスクが止まります。
-長い仕事は短いステップへ分割します。下層FreeRTOSはプリエンプトできますが、
-この自作スケジューラはタスク関数を強制中断できません。
-`os_init` と登録は実行ループの開始前に行い、タスク内・割り込み・別FreeRTOSタスクから
-これらのAPIを呼びません。`os_step` も再帰呼び出し禁止です。
+表示後はカーネルのループで停止し、U-Bootへは戻りません。再試行には電源を入れ直します。
+今回の手順では永続的な自動起動設定を変えないので、次の起動時には元のSD起動手順になります。
+`bootm` の引数に `.bin` や `.elf` を渡す手順ではありません。必ず `.itb` をロードしてください。
 
-これは時間制約のある処理を学ぶ土台です。優先度、タスク専用スタック、コンテキスト切替、
-独自割り込みハンドラ、期限保証はまだありません。printfも実行時間が一定でなく、
-ハードリアルタイム性は保証しません。
+## 起動後に自作コードが行うこと
 
-## ファイル
+1. Supervisor割り込みを止め、自前の例外停止先を `stvec` に設定する。
+2. `satp=0` として物理アドレスで実行し、TLB・命令フェンスを行う。
+3. `gp` と16KiBの専用スタックを設定する。
+4. `.bss` をゼロクリアし、U-Bootの引数を保持したままCへ入る。
+5. `.bss` と `.data` の初期状態を確認する。
+6. UART0の送信可能ビットをポーリングし、32bit MMIO書き込みで文字を送る。
+7. 送信完了を待ち、自前の停止ループに入る。
 
-| ファイル | 役割 |
+UARTのクロック・pinmux・ボーレートはU-Bootの初期化結果を引き継ぎます。
+UART0のベースは `0x04140000`、レジスタ間隔は4バイト、LSRは `+0x14` です。
+U-BootやOpenSBIの文字出力関数は呼びません。
+例外発生時は `trap_entry` で停止し、`t0=scause`、`t1=sepc`、`t2=stval` をデバッガーで確認できます。
+
+| メモリ領域 | この実装での用途 |
 | --- | --- |
-| Makefile | セットアップ・ビルド・書き込み・テストの窓口 |
-| scripts/ | 依存導入とESP-IDF呼び出し |
-| CMakeLists.txt | ESP-IDFプロジェクトの定義 |
-| sdkconfig.defaults | 初期設定 |
-| main/CMakeLists.txt | ソースと依存コンポーネントの指定 |
-| main/mini_os.h | 自作APIの宣言 |
-| main/mini_os.c | ハードウェアに依存しないスケジューラ |
-| main/main.c | ESP32用時計、2タスク、起動処理 |
-| tests/test_mini_os.c | PCでのロジックテスト |
-| tests/test_make.py | MakeからSDKへの引数転送・エラー伝播・既存SDK再利用のテスト |
+| `0x80000000` から | DRAM先頭。OpenSBI等の領域を使用しない |
+| `0x80200000`〜`0x802fffff` | カーネル用1MiB。先頭がエントリーポイント |
+| `0x81400000` から | U-BootがFITイメージを一時的にロードする位置 |
+| DRAM上部 | メーカーの予約領域・小コア等を使用しない |
 
-## 検証
+カーネルのメモリ上限とスタック整列はリンカのASSERTで検査します。
+U-Bootの元のリンクアドレスも `0x80200000` ですが、ここではDRAM上部へのリロケーションを
+完了し、コマンドを受け付けているメーカーの通常起動経路を前提にしています。
+独自U-Boot、リロケーションを無効化した構成、異なるメモリマップにはそのまま適用できません。
 
-この配布物ではPCのGCCでスケジューラのテストを実行済みです。
-期限前は実行しないこと、全タスク待機、同時実行可能時の巡回順、登録上限、
-長い遅延後に過去分を連続実行しないこと、処理終了から待ち時間を数えることを確認しました。
-Makeのコマンド転送、エラー伝播、同じSDKの再利用、異なる版・変更済みSDKの拒否は模擬SDKでテストしています。
-実際のSDKダウンロード・ツール導入、ESP-IDFのクロスビルドとESP32実機での書き込み・動作は未検証です。
-
-再実行する場合はプロジェクト直下で次を実行します。
+## テストと検証範囲
 
 ```bash
+make setup-test
 make test
 ```
 
+`setup-test` は `.venv` にテスト用のUnicornとpyelftoolsをインストールします。
+`make test` は **ビルドした実際のRISC-Vバイナリ** をS-modeで実行し、UARTのMMIOだけを模擬します。
+BSSを意図的に非ゼロにした状態から起動して初期化を検証し、UARTが一時的に送信不可の場合も確認します。
+
+確認済み：
+
+- GNU RISC-V GCC 12.2.0 / Binutils 2.40によるクロスビルド。
+- dtc 1.6.1 / mkimage 2023.01によるDevice Tree・FIT生成。
+- エントリー、BSS、スタック配置、未解決シンボルがないこと。
+- FIT内のカーネルとDTBが生成ファイルと一致し、CRC32が一致すること。
+- S-modeからの起動、`Hello chibi-os\r\n` の送信、引数保持、停止処理。
+- `.data` 破損時のエラーメッセージ。
+
+**未確認：Milk-V Duo実機での起動、実際のU-Boot/OpenSBI引き渡し、UARTの電気的動作。**
+UnicornはCV1800B全体を再現するエミュレータではなく、キャッシュ、DRAM初期化、
+実際のUARTのクロックや配線、PMP設定、SDカード読込は検証していません。
+
+## ファイル構成
+
+| ファイル | 役割 |
+| --- | --- |
+| `src/start.S` | S-modeエントリー、スタック、BSS、例外停止 |
+| `src/kernel.c` | 初期状態確認とHelloメッセージ |
+| `src/uart.c` | UART0のポーリング出力 |
+| `include/platform.h` | DuoのUART定数 |
+| `kernel.ld` | メモリ配置 |
+| `boot/duo.dts` | 固定ボード用の最小DTB |
+| `boot/chibi-os.its` | bootm用FITの構成 |
+| `Makefile` | セットアップ・ビルド・SDコピー・テスト |
+| `tests/test_boot.py` | 実際の機械語とFITの検証 |
+
+`make help` で全コマンド、`make inspect` で逆アセンブルとFIT情報を確認できます。
+`make clean` は `build/` だけを削除します。旧 `make flash` は廃止し、SDコピーとU-Boot起動に変更しました。
+
 ## 次の段階
 
-まずBの `return 1000` を `return 2000` に変更し、書き込み直して頻度を確認します。
-次に3つ目のタスクを登録し、管理表と実行順を観察します。
-その後、優先度、イベント待ち、タスク専用スタックとコンテキスト切替、
-タイマー割り込みによるプリエンプションの順に進めます。
-FreeRTOSを取り除く段階では、ESP32の正確な型番・CPUアーキテクチャを確定し、
-起動コード、リンカスクリプト、例外/割り込み、時計、UARTを含む別の基盤が必要です。
-このサンプルからFreeRTOSヘッダーだけを消して独立OSにすることはできません。
+1. 例外ハンドラーでレジスタを保存し、原因をUARTへ表示する。
+2. SBIタイマーと割り込みを扱う。
+3. 物理ページ管理とSv39ページテーブルを実装する。
+4. U-modeへの移行、システムコール、プロセスの切り替えを実装する。
 
-## 一次資料
+## 設計に使った一次資料
 
-- セットアップとビルド・書き込み: https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32/get-started/linux-macos-setup.html
-- ESP-IDFのFreeRTOS: https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32/api-reference/system/freertos_idf.html
-- ESP Timer: https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/esp_timer.html
-
+- [Milk-V Duo：仕様・UART配線](https://milkv.io/docs/duo/getting-started/duo)
+- [公式SDKのメモリマップ](https://github.com/milkv-duo/duo-buildroot-sdk/blob/develop/build/boards/cv180x/cv1800b_milkv_duo_sd/memmap.py)
+- [公式ボードのU-Boot設定：S-mode、FIT、go無効](https://github.com/milkv-duo/duo-buildroot-sdk/blob/develop/build/boards/cv180x/cv1800b_milkv_duo_sd/u-boot/cvitek_cv1800b_milkv_duo_sd_defconfig)
+- [UART0アドレス・レジスタ間隔・標準SD起動コマンド](https://github.com/milkv-duo/duo-buildroot-sdk/blob/develop/u-boot-2021.10/include/configs/cv180x-asic.h)
+- [RISC-V bootm：起動前処理とカーネル引数](https://github.com/milkv-duo/duo-buildroot-sdk/blob/develop/u-boot-2021.10/arch/riscv/lib/bootm.c)
