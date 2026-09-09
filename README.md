@@ -1,7 +1,7 @@
-# chibi-os — Milk-V Duoから始める自作OS
+# chibi-os — Milk-V Duo / QEMU virtで動く自作OS
 
-初代 **Milk-V Duo（CV1800B、64MB）** のメインC906コアで動く、最小のRISC-Vカーネルです。
-U-Bootの `bootm` からS-modeで起動し、自前のスタックとUARTドライバを使って次を表示します。
+初代 **Milk-V Duo（CV1800B、64MB）** と **QEMU virt（RV64）** で動く、最小のRISC-Vカーネルです。
+どちらもS-modeで起動し、自前のスタックとUARTドライバを使って次を表示します。
 
 ```text
 Hello chibi-os
@@ -14,7 +14,85 @@ Cランタイム・標準ライブラリ・U-Bootのサービス関数を使い�
 リポジトリ名 `chibi-rtos` はそのままです。旧ESP32版はGit履歴の
 [`b76b1e4`](https://github.com/kn1515/chibi-rtos/tree/b76b1e4ec80fb2debacfc886180dafafa59512a1) に残っています。
 
-## 対象と前提
+## まずPCで動かす：`make qemu`
+
+Ubuntu/Debianで初回の依存ツールを導入したら、**`make qemu` 一発でビルドと起動**ができます。
+
+```bash
+# clone済みのリポジトリ内で
+git pull
+make setup
+make qemu
+```
+
+端末にOpenSBIの起動ログが出た後、次の文字列が表示されます。
+
+```text
+Hello chibi-os
+```
+
+表示後、カーネルは停止ループに入ります。**QEMUを終了するにはCtrl+Aを押し、離してXを押します。**
+SDカード、USB-UART変換器、実機は不要です。`make qemu` が `PLATFORM=qemu` を選ぶため、
+通常の `PLATFORM=milkv` 設定があってもMilk-V用のバイナリは起動しません。
+毎回の依存インストールは行わず、変更されたソースだけ再ビルドします。
+
+| コマンド | 動作 |
+| --- | --- |
+| `make qemu` | QEMU向けにビルドして起動 |
+| `make build PLATFORM=qemu` | QEMU向けにビルドだけ実行 |
+| `make run PLATFORM=qemu` | `make qemu`と同じビルド・起動 |
+| `make build PLATFORM=milkv` | Milk-V向けFITを作成。PLATFORM省略時もこちら |
+| `make clean PLATFORM=qemu` | QEMUの生成物だけ削除 |
+| `make clean PLATFORM=milkv` | Milk-Vの生成物だけ削除 |
+| `make clean-all` | 旧版の生成物を含め、build全体を削除 |
+| `make test-qemu` | 実際のQEMUでHelloを確認して自動終了するテスト |
+
+ビルド先は **`build/milkv/` と `build/qemu/`** に分かれています。
+交互にビルドしても、オブジェクトファイル・ELF・バイナリを取り違えません。
+旧版の `build/chibi-os.itb` は使わず、実機へは **`build/milkv/chibi-os.itb`** をコピーしてください。
+旧版のファイルが残っていても新しいMakefileからは参照しません。
+
+QEMU側は次の経路で起動します。
+
+- QEMUがOpenSBIと `build/qemu/chibi-os.elf` をロードし、virt用のDevice Treeを生成する。
+- OpenSBIがM-modeからカーネルのS-modeエントリーへ制御を渡す。
+- 共通の `start.S` / `kernel.c` が実行され、virtのUARTへ文字を送る。
+
+**QEMU virtはMilk-V Duoのハードウェアを再現するものではありません。**
+QEMU側ではU-Boot/FITを使わず、`-bios default -kernel ...elf` で起動します。
+Milk-V側は従来のメーカーOpenSBI/U-Boot/FIT経路を使います。
+両方で共通の起動処理・カーネル・UART処理を使い、MMIOの定数とアクセス幅を切り替えています。
+
+| 項目 | `PLATFORM=milkv` | `PLATFORM=qemu` |
+| --- | --- | --- |
+| UARTの定義 | `platforms/milkv/platform.h` | `platforms/qemu/platform.h` |
+| UARTベース | `0x04140000` | `0x10000000` |
+| レジスタ間隔 | 4バイト | 1バイト |
+| MMIOアクセス幅 | 32bit | 8bit |
+| カーネルの先頭 | `0x80200000` | `0x80200000` |
+| 起動ファイル | `build/milkv/chibi-os.itb` | `build/qemu/chibi-os.elf` |
+| DTB | 同梱する最小Duo DTB | QEMUが自動生成するvirt DTB |
+
+QEMUはTCGによるCPUエミュレーションを使います。ホストのRISC-V CPUやKVMは不要です。
+UART出力はQEMUの端末へ接続します。共通カーネルの仮想記憶・割り込み実装はまだありません。
+
+### QEMU起動時のトラブル
+
+- `qemu-system-riscv64` がない：`make setup` を実行してください。
+- OpenSBIを読み込めない：`qemu-system-misc`、`qemu-system-data`、`opensbi` の導入を確認します。
+  通常は `-bios default` でQEMU同梱のファームウェアが選ばれます。
+- 独自配置のQEMUやOpenSBIを使う場合：
+
+```bash
+make qemu QEMU=/absolute/path/qemu-system-riscv64 \
+  QEMU_BIOS=/absolute/path/fw_dynamic.bin
+```
+
+S-modeカーネルなので `QEMU_BIOS=none` は使えません。
+`make test-qemu` は表示を20秒以内に確認し、QEMUの終了キーを送ります。
+テストが失敗した場合は起動ログを表示します。
+
+## Milk-V Duoの対象と前提
 
 - 初代Milk-V Duo、CV1800B、64MB、RISC-Vメインコア。**Duo 256M・Duo Sは対象外**です。
 - メーカーの初代Duo用SDイメージで、U-Bootのコンソールまで正常に起動できること。
@@ -53,7 +131,7 @@ make build
 ```
 
 `make setup` はGCC/BinutilsのRISC-V bare-metalツールチェーン、`dtc`、`mkimage`、
-`picocom`、Pythonを導入します。通常ユーザーで実行し、aptの操作時だけsudoを使います。
+`picocom`、Python、QEMU/OpenSBIを導入します。通常ユーザーで実行し、aptの操作時だけsudoを使います。
 **ESP-IDFやメーカーの巨大なSDKのダウンロードは不要です。**
 
 既に依存ツールがある場合は `make setup SKIP_DEPS=1` で存在チェックのみを実行できます。
@@ -63,11 +141,11 @@ C906固有命令や浮動小数点命令を使わない構成です。
 
 | 生成物 | 用途 |
 | --- | --- |
-| `build/chibi-os.elf` | シンボル・デバッグ情報付きカーネル |
-| `build/chibi-os.bin` | ヘッダーなしの機械語と初期化データ |
-| `build/duo.dtb` | このカーネル用の最小Device Tree |
-| **`build/chibi-os.itb`** | **SDカードへコピーする起動イメージ** |
-| `build/chibi-os.map` | 関数・データ・スタックの配置 |
+| `build/milkv/chibi-os.elf` | シンボル・デバッグ情報付きカーネル |
+| `build/milkv/chibi-os.bin` | ヘッダーなしの機械語と初期化データ |
+| `build/milkv/duo.dtb` | このカーネル用の最小Device Tree |
+| **`build/milkv/chibi-os.itb`** | **SDカードへコピーする起動イメージ** |
+| `build/milkv/chibi-os.map` | 関数・データ・スタックの配置 |
 
 ## 2. SDカードへコピーする
 
@@ -77,7 +155,7 @@ OSイメージを新規に書き込む操作はSDカードの内容を消しま�
 本リポジトリのMakefileはSDカードのフォーマットやディスク全体への書き込みを行いません。
 
 PCでSDカードのFATブートパーティション（`fip.bin`、`boot.sd` がある場所）をマウントし、
-そこへ `build/chibi-os.itb` をコピーします。Linuxの例：
+そこへ `build/milkv/chibi-os.itb` をコピーします。Linuxの例：
 
 ```bash
 make sd-copy SD_DIR=/media/yourname/boot
@@ -181,12 +259,20 @@ U-Bootの元のリンクアドレスも `0x80200000` ですが、ここではDRA
 
 ```bash
 make setup-test
-make test
+make test PLATFORM=milkv
+make test PLATFORM=qemu
+```
+
+QEMUの起動確認だけならPythonの追加パッケージは不要です。
+
+```bash
+make test-qemu
 ```
 
 `setup-test` は `.venv` にテスト用のUnicornとpyelftoolsをインストールします。
 `make test` は **ビルドした実際のRISC-Vバイナリ** をS-modeで実行し、UARTのMMIOだけを模擬します。
 BSSを意図的に非ゼロにした状態から起動して初期化を検証し、UARTが一時的に送信不可の場合も確認します。
+`PLATFORM=qemu` では続けて実際のQEMU/OpenSBIを起動し、文字出力を確認します。
 
 確認済み：
 
@@ -196,8 +282,11 @@ BSSを意図的に非ゼロにした状態から起動して初期化を検証�
 - FIT内のカーネルとDTBが生成ファイルと一致し、CRC32が一致すること。
 - S-modeからの起動、`Hello chibi-os\r\n` の送信、引数保持、停止処理。
 - `.data` 破損時のエラーメッセージ。
+- Milk-V版のカーネルバイナリがプラットフォーム分離前とバイト単位で一致すること。
+- QEMU 7.2.22 / OpenSBI 1.1で `make qemu` によるHello表示と終了操作。
+- 実際のQEMUを起動する `make test PLATFORM=qemu` の自動テスト。
 
-**未確認：Milk-V Duo実機での起動、実際のU-Boot/OpenSBI引き渡し、UARTの電気的動作。**
+**未確認：Milk-V Duo実機での起動、実機上のU-Boot/OpenSBI引き渡し、UARTの電気的動作。**
 UnicornはCV1800B全体を再現するエミュレータではなく、キャッシュ、DRAM初期化、
 実際のUARTのクロックや配線、PMP設定、SDカード読込は検証していません。
 
@@ -208,15 +297,18 @@ UnicornはCV1800B全体を再現するエミュレータではなく、キャッ
 | `src/start.S` | S-modeエントリー、スタック、BSS、例外停止 |
 | `src/kernel.c` | 初期状態確認とHelloメッセージ |
 | `src/uart.c` | UART0のポーリング出力 |
-| `include/platform.h` | DuoのUART定数 |
+| `platforms/milkv/platform.h` | DuoのUART定数・アクセス幅 |
+| `platforms/qemu/platform.h` | QEMU virtのUART定数・アクセス幅 |
+| `scripts/qemu.sh` | QEMU/OpenSBI起動 |
 | `kernel.ld` | メモリ配置 |
 | `boot/duo.dts` | 固定ボード用の最小DTB |
 | `boot/chibi-os.its` | bootm用FITの構成 |
 | `Makefile` | セットアップ・ビルド・SDコピー・テスト |
-| `tests/test_boot.py` | 実際の機械語とFITの検証 |
+| `tests/test_boot.py` | 両プラットフォームの機械語とMilk-V FITの検証 |
+| `tests/test_qemu.py` | 実際のQEMUでHelloを確認し自動終了 |
 
 `make help` で全コマンド、`make inspect` で逆アセンブルとFIT情報を確認できます。
-`make clean` は `build/` だけを削除します。旧 `make flash` は廃止し、SDコピーとU-Boot起動に変更しました。
+`make clean` は選択中のプラットフォームの生成物だけを削除します。旧 `make flash` は廃止し、SDコピーとU-Boot起動に変更しました。
 
 ## 次の段階
 
@@ -232,3 +324,6 @@ UnicornはCV1800B全体を再現するエミュレータではなく、キャッ
 - [公式ボードのU-Boot設定：S-mode、FIT、go無効](https://github.com/milkv-duo/duo-buildroot-sdk/blob/develop/build/boards/cv180x/cv1800b_milkv_duo_sd/u-boot/cvitek_cv1800b_milkv_duo_sd_defconfig)
 - [UART0アドレス・レジスタ間隔・標準SD起動コマンド](https://github.com/milkv-duo/duo-buildroot-sdk/blob/develop/u-boot-2021.10/include/configs/cv180x-asic.h)
 - [RISC-V bootm：起動前処理とカーネル引数](https://github.com/milkv-duo/duo-buildroot-sdk/blob/develop/u-boot-2021.10/arch/riscv/lib/bootm.c)
+
+- [QEMU virtの起動方式・DTB・OpenSBI](https://www.qemu.org/docs/master/system/riscv/virt.html)
+- [QEMU v7.2.0のvirt UART定義](https://github.com/qemu/qemu/blob/v7.2.0/hw/riscv/virt.c)

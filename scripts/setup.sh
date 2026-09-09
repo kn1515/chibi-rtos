@@ -19,4 +19,5 @@ if [[ "$EUID" -ne 0 ]]; then privilege=(sudo); fi
 "${privilege[@]}" apt-get update
 "${privilege[@]}" apt-get install -y make git \
     gcc-riscv64-unknown-elf binutils-riscv64-unknown-elf \
-    device-tree-compiler u-boot-tools python3 python3-venv picocom
+    device-tree-compiler u-boot-tools python3 python3-venv picocom \
+    qemu-system-misc opensbi

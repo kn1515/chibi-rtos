@@ -1,4 +1,4 @@
-/* U-Boot bootm handoff: S-mode, satp=0, a0=hart id, a1=DTB address.
+/* U-Boot bootm or QEMU/OpenSBI handoff: S-mode, satp=0, a0=hart id, a1=DTB address.
  * One boot hart only. No U-Boot services or return path are used. */
     .section .text.boot, "ax", @progbits
     .globl _start
@@ -27,7 +27,7 @@ _start:
     addi t0, t0, 8
     j 1b
 2:
-    /* a0/a1 still contain U-Boot's boot arguments. */
+    /* a0/a1 still contain the firmware's boot arguments. */
     call kernel_main
     .globl kernel_halt
 kernel_halt:

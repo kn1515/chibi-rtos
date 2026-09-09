@@ -1,5 +1,6 @@
 """Run the actual RV64 binary in S-mode. UART is mocked, not a Duo emulator."""
 from pathlib import Path
+import os
 import struct
 import subprocess
 import unittest
@@ -15,9 +16,12 @@ from unicorn.riscv_const import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-BUILD = ROOT / 'build'
+PLATFORM = os.environ.get('CHIBI_PLATFORM', 'milkv')
+if PLATFORM not in ('milkv', 'qemu'):
+    raise ValueError('unknown test platform')
+BUILD = ROOT / 'build' / PLATFORM
 BASE = 0x80200000
-UART = 0x04140000
+UART, WIDTH, IER, LSR = (0x04140000, 4, 4, 0x14) if PLATFORM == 'milkv' else (0x10000000, 1, 1, 5)
 
 
 class BootTests(unittest.TestCase):
@@ -68,23 +72,23 @@ class BootTests(unittest.TestCase):
         writes = []
 
         def on_read(uc, access, address, size, value, data):
-            self.assertEqual((address, size), (UART + 0x14, 4))
+            self.assertEqual((address, size), (UART + LSR, WIDTH))
             reads[0] += 1
             status = 0 if reads[0] <= 3 else 0x20
             if output.endswith(b'\n'):
                 reads[1] += 1
                 if reads[1] > 3:
                     status |= 0x40
-            uc.mem_write(address, struct.pack('<I', status))
+            uc.mem_write(address, status.to_bytes(WIDTH, 'little'))
 
         def on_write(uc, access, address, size, value, data):
-            self.assertEqual(size, 4)
+            self.assertEqual(size, WIDTH)
             writes.append((address, value))
             if address == UART:
                 self.assertGreater(reads[0], 3, 'must wait for THRE')
                 output.append(value & 255)
             else:
-                self.assertEqual((address, value), (UART + 4, 0))
+                self.assertEqual((address, value), (UART + IER, 0))
 
         def on_code(uc, address, size, data):
             if address in (s['kernel_halt'], s['trap_entry']):
@@ -102,7 +106,7 @@ class BootTests(unittest.TestCase):
         self.assertEqual(cpu.reg_read(UC_RISCV_REG_SIE), 0)
         self.assertEqual(cpu.reg_read(UC_RISCV_REG_STVEC), s['trap_entry'])
         self.assertGreater(reads[1], 3, 'must wait for TEMT before parking')
-        self.assertEqual(writes[0], (UART + 4, 0))
+        self.assertEqual(writes[0], (UART + IER, 0))
         return cpu, bytes(output)
 
     def test_raw_binary_hello_and_boot_arguments(self):
@@ -118,6 +122,7 @@ class BootTests(unittest.TestCase):
         _, output = self.emulate(corrupt_data=True)
         self.assertEqual(output, b'chibi-os: startup memory check failed\r\n')
 
+    @unittest.skipUnless(PLATFORM == 'milkv', 'FIT is only used by Milk-V')
     def test_fit_contents_and_checksums(self):
         def get(node, prop, kind='s'):
             return subprocess.check_output(

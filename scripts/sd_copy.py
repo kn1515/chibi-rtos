@@ -12,7 +12,7 @@ if not destination.is_dir() or not os.path.ismount(destination):
     sys.exit("SD_DIR must be the mount point of an already mounted SD boot partition")
 if not (destination / "fip.bin").is_file():
     sys.exit("fip.bin was not found: select the existing Milk-V Duo boot partition")
-source = Path(__file__).resolve().parents[1] / "build/chibi-os.itb"
+source = Path(__file__).resolve().parents[1] / "build/milkv/chibi-os.itb"
 output = destination / source.name
 if output.is_symlink():
     sys.exit("Refusing to overwrite a symlink at the destination")

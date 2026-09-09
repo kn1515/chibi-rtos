@@ -2,9 +2,17 @@
 #include "platform.h"
 #include "uart.h"
 
+#if UART_MMIO_WIDTH == 4
+typedef uint32_t uart_reg_t;
+#elif UART_MMIO_WIDTH == 1
+typedef uint8_t uart_reg_t;
+#else
+#error Unsupported UART access width
+#endif
+
 static uint32_t read_reg(unsigned long offset)
 {
-    uint32_t value = *(volatile uint32_t *)(UART0_BASE + offset);
+    uint32_t value = *(volatile uart_reg_t *)(UART0_BASE + offset);
     __asm__ volatile ("fence iorw, iorw" ::: "memory");
     return value;
 }
@@ -12,13 +20,14 @@ static uint32_t read_reg(unsigned long offset)
 static void write_reg(unsigned long offset, uint32_t value)
 {
     __asm__ volatile ("fence iorw, iorw" ::: "memory");
-    *(volatile uint32_t *)(UART0_BASE + offset) = value;
+    *(volatile uart_reg_t *)(UART0_BASE + offset) = (uart_reg_t)value;
     __asm__ volatile ("fence iorw, iorw" ::: "memory");
 }
 
 void uart_init(void)
 {
-    /* U-Boot leaves UART0 at 115200 8N1 with DLAB clear.
+    /* The boot firmware (U-Boot on Duo, OpenSBI on QEMU virt)
+     * leaves the console UART initialized with DLAB clear.
      * Retain its clock, pinmux, baud divisor and FIFO configuration.
      * This kernel uses polling, so UART interrupts are not needed. */
     write_reg(UART_IER, 0);
