@@ -31,7 +31,7 @@ make qemu
 Hello chibi-os
 ```
 
-表示後、カーネルは停止ループに入ります。**QEMUを終了するにはCtrl+Aを押し、離してXを押します。**
+表示後、カーネルは停止ループに入ります。**QEMUを終了するにはCtrl+Cを押します。**
 SDカード、USB-UART変換器、実機は不要です。`make qemu` が `PLATFORM=qemu` を選ぶため、
 通常の `PLATFORM=milkv` 設定があってもMilk-V用のバイナリは起動しません。
 毎回の依存インストールは行わず、変更されたソースだけ再ビルドします。
@@ -78,6 +78,18 @@ UART出力はQEMUの端末へ接続します。共通カーネルの仮想記憶
 
 ### QEMU起動時のトラブル
 
+更新前のQEMUが終了できない場合は、別ターミナルで次を実行します。
+
+```bash
+pgrep -af qemu-system-riscv64
+```
+
+該当するQEMUの行頭のPIDを確認し、`kill PID` でそのプロセスだけを終了します。
+その後 `git pull` して `make qemu` を起動し直してください。
+更新後は端末のシグナルを有効にしているため、終了はCtrl+Cです。
+Ctrl+Aに続けてx/cを押すQEMUモニター操作は使用しません。
+
+
 - `qemu-system-riscv64` がない：`make setup` を実行してください。
 - OpenSBIを読み込めない：`qemu-system-misc`、`qemu-system-data`、`opensbi` の導入を確認します。
   通常は `-bios default` でQEMU同梱のファームウェアが選ばれます。
@@ -89,7 +101,7 @@ make qemu QEMU=/absolute/path/qemu-system-riscv64 \
 ```
 
 S-modeカーネルなので `QEMU_BIOS=none` は使えません。
-`make test-qemu` は表示を20秒以内に確認し、QEMUの終了キーを送ります。
+`make test-qemu` は表示を20秒以内に確認し、仮想端末からCtrl+Cを送り、終了を確認します。
 テストが失敗した場合は起動ログを表示します。
 
 ## Milk-V Duoの対象と前提

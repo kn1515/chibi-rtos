@@ -49,7 +49,7 @@ endif
 help:
 	@printf '%s\n' \
 	  'make setup                         Install compiler, FIT tools and QEMU/OpenSBI (Ubuntu/Debian)' \
-	  'make qemu                          Build for QEMU virt and print Hello chibi-os (Ctrl+A, X exits)' \
+	  'make qemu                          Build for QEMU virt and print Hello chibi-os (Ctrl+C exits)' \
 	  'make build PLATFORM=milkv          Build build/milkv/chibi-os.itb (default platform)' \
 	  'make build PLATFORM=qemu           Build build/qemu/chibi-os.elf' \
 	  'make run PLATFORM=qemu             Build and run QEMU virt' \

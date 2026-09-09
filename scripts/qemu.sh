@@ -12,5 +12,8 @@ if [[ "$bios" == none ]]; then
 fi
 # QEMU generates the virt DTB and OpenSBI supplies the S-mode handoff.
 # Use the QEMU-specific ELF, never the Duo FIT/binary.
+echo 'QEMU console: press Ctrl+C to exit.'
 exec "$qemu" -machine virt -accel tcg -m 128M -smp 1 \
-    -nographic -bios "$bios" -kernel build/qemu/chibi-os.elf
+    -display none -monitor none \
+    -chardev stdio,id=console,signal=on -serial chardev:console \
+    -bios "$bios" -kernel build/qemu/chibi-os.elf
